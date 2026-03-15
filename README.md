@@ -101,76 +101,131 @@ A **Live AI Agent** that:
 
 ## Architecture
 
+> **For Judges:** View the full architecture documentation at [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) or see the diagrams below (GitHub renders Mermaid automatically). To export as PNG, paste the code into [mermaid.live](https://mermaid.live).
+
+### System Overview
+
+```mermaid
+flowchart TB
+    subgraph User["👤 User"]
+        CAM[🎥 Camera]
+        MIC[🎤 Microphone]
+        SPEAK[🔊 Speaker]
+    end
+
+    subgraph Frontend["Frontend (Next.js)"]
+        UI[Interview UI]
+        TOKEN[Token API]
+        SIDEBAR[Sidebar<br/>Timer + Transcript]
+    end
+
+    subgraph LiveKit["LiveKit Server"]
+        ROOM[Room Manager]
+        MEDIA[Media Router]
+    end
+
+    subgraph Agent["Visa Interview Agent (Python)"]
+        SESSION[AgentSession]
+
+        subgraph Agents["Agent Handoffs"]
+            GATE[CameraGateAgent<br/>Requires Video]
+            INTERVIEWER[VisaInterviewerAgent<br/>Conducts Interview]
+        end
+
+        ANALYZER[VideoAnalyzer<br/>Background Analysis]
+        STATE[InterviewSessionData<br/>Typed State]
+
+        subgraph Tools["Agent Tools"]
+            T1[flag_concern]
+            T2[update_assessment]
+            T3[conclude_interview]
+        end
+    end
+
+    subgraph Google["Google Cloud"]
+        subgraph Gemini["Gemini API"]
+            LIVE[Gemini 2.5 Flash<br/>Live API]
+            VISION[Gemini 2.0 Flash<br/>Vision]
+        end
+    end
+
+    CAM & MIC --> UI
+    UI <--> |WebRTC| ROOM
+    TOKEN --> |JWT| ROOM
+    ROOM <--> MEDIA
+    MEDIA <--> |Agent Protocol| SESSION
+
+    SESSION --> GATE
+    GATE --> |Video Enabled| INTERVIEWER
+    INTERVIEWER --> Tools
+
+    SESSION <--> |Real-time Audio/Video| LIVE
+    ANALYZER --> |Frame Analysis| VISION
+    ANALYZER --> STATE
+    INTERVIEWER --> STATE
+
+    STATE --> |Attributes| SIDEBAR
+    LIVE --> |TTS Audio| SPEAK
+
+    style Google fill:#4285f4,color:#fff
+    style Gemini fill:#34a853,color:#fff
+    style Agent fill:#fbbc04,color:#000
+    style LiveKit fill:#ff5722,color:#fff
+    style Frontend fill:#9c27b0,color:#fff
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         FRONTEND                                 │
-│                    (Next.js + React)                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │ Video/Audio  │  │  Interview   │  │   Control Bar        │  │
-│  │   Preview    │  │  Sidebar     │  │ (Mic/Cam/End Call)   │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
-└─────────┼─────────────────┼─────────────────────┼───────────────┘
-          │                 │                     │
-          │    WebRTC + LiveKit Protocol          │
-          ▼                 ▼                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      LIVEKIT SERVER                              │
-│              (Real-time Media Infrastructure)                    │
-│         Handles: Audio/Video Streams, Room Management            │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              │ Agent Protocol
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     VISA INTERVIEW AGENT                         │
-│                        (Python)                                  │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                    AgentSession                             │ │
-│  │  ┌─────────────────┐     ┌─────────────────────────────┐   │ │
-│  │  │ CameraGateAgent │ ──► │   VisaInterviewerAgent      │   │ │
-│  │  │ (Requires Video)│     │   (Conducts Interview)      │   │ │
-│  │  └─────────────────┘     │                             │   │ │
-│  │                          │  Tools:                     │   │ │
-│  │                          │  • flag_concern()           │   │ │
-│  │                          │  • update_assessment()      │   │ │
-│  │                          │  • conclude_interview()     │   │ │
-│  │                          └─────────────────────────────┘   │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                   VideoAnalyzer                             │ │
-│  │     (Background task analyzing video frames)                │ │
-│  │     Updates: confidence_level, video_impression, tips      │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │              InterviewSessionData                           │ │
-│  │  Typed state: stage, questions_asked, decision, etc.       │ │
-│  └────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              │ Gemini Live API (WebSocket)
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    GOOGLE GEMINI                                 │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Gemini 2.5 Flash (Native Audio Preview)                │    │
-│  │  • Real-time voice conversation                         │    │
-│  │  • Vision understanding (sees user via video)           │    │
-│  │  • Proactive responses                                  │    │
-│  │  • Interruption handling                                │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Gemini 2.0 Flash                                       │    │
-│  │  • Periodic video frame analysis                        │    │
-│  │  • Body language assessment                             │    │
-│  │  • Confidence detection                                 │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+
+### Data Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as Frontend
+    participant L as LiveKit
+    participant A as Agent
+    participant G as Gemini Live API
+    participant V as Gemini Vision
+
+    U->>F: Enter name, select visa type
+    F->>L: Request token + create room
+    L->>A: Spawn agent in room
+    A->>G: Connect to Gemini Live API
+
+    U->>F: Enable camera
+    F->>L: Publish video track
+    L->>A: Track subscribed event
+    A->>A: Switch to InterviewerAgent
+    A->>G: Begin interview
+    G->>U: "State your full name..."
+
+    loop Interview Loop
+        U->>G: Voice response
+        G->>A: Transcription + context
+        A->>G: Generate follow-up
+        G->>U: Next question (TTS)
+
+        Note over A,V: Background (every 30s)
+        A->>V: Send video frame
+        V->>A: Confidence analysis
+        A->>F: Update attributes
+    end
+
+    A->>G: Conclude interview
+    G->>U: "Your visa is APPROVED/DENIED"
+    A->>L: Disconnect room
 ```
+
+### Component Details
+
+| Component | Technology | Responsibility |
+|-----------|------------|----------------|
+| **Frontend** | Next.js 16, React 19 | UI, token generation, real-time display |
+| **LiveKit Server** | LiveKit OSS | WebRTC routing, room management |
+| **Agent Runtime** | Python 3.11, LiveKit Agents SDK | Agent lifecycle, event handling |
+| **CameraGateAgent** | Custom Agent class | Enforce camera requirement |
+| **VisaInterviewerAgent** | Custom Agent class | Conduct interview with tools |
+| **VideoAnalyzer** | Background asyncio task | Periodic frame analysis |
+| **Gemini Live API** | gemini-2.5-flash-native-audio | Real-time multimodal conversation |
+| **Gemini Vision** | gemini-2.0-flash | Body language analysis |
 
 ---
 
