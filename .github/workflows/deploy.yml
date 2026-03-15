@@ -1,0 +1,97 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  PROJECT_ID: visa-interview-2024
+  REGION: us-central1
+  AGENT_SERVICE: visa-interview-agent
+  FRONTEND_SERVICE: visa-interview-frontend
+
+jobs:
+  deploy-agent:
+    name: Deploy Agent to Cloud Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build and Push Agent Image
+        run: |
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/visa-agent/${{ env.AGENT_SERVICE }}:${{ github.sha }} ./agent
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/visa-agent/${{ env.AGENT_SERVICE }}:${{ github.sha }}
+
+      - name: Deploy Agent to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.AGENT_SERVICE }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/visa-agent/${{ env.AGENT_SERVICE }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --memory 2Gi \
+            --cpu 2 \
+            --timeout 3600 \
+            --set-env-vars "LIVEKIT_URL=${{ secrets.LIVEKIT_URL }}" \
+            --set-env-vars "LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }}" \
+            --set-env-vars "LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}" \
+            --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}"
+
+  deploy-frontend:
+    name: Deploy Frontend to Cloud Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build and Push Frontend Image
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_LIVEKIT_URL=${{ secrets.LIVEKIT_URL }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/visa-agent/${{ env.FRONTEND_SERVICE }}:${{ github.sha }} \
+            ./frontend
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/visa-agent/${{ env.FRONTEND_SERVICE }}:${{ github.sha }}
+
+      - name: Deploy Frontend to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/visa-agent/${{ env.FRONTEND_SERVICE }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --memory 512Mi \
+            --cpu 1 \
+            --set-env-vars "LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }}" \
+            --set-env-vars "LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}" \
+            --set-env-vars "NEXT_PUBLIC_LIVEKIT_URL=${{ secrets.LIVEKIT_URL }}"
+
+      - name: Show Frontend URL
+        run: |
+          echo "Frontend deployed to:"
+          gcloud run services describe ${{ env.FRONTEND_SERVICE }} --region ${{ env.REGION }} --format 'value(status.url)'

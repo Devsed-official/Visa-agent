@@ -6,6 +6,15 @@
 .env.local
 .env*.local
 
+# Google Cloud credentials (NEVER commit these)
+*.json
+!package.json
+!tsconfig.json
+!components.json
+key.json
+*-key.json
+service-account*.json
+
 # Python
 __pycache__/
 *.py[cod]
