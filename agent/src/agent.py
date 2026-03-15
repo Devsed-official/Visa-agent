@@ -620,7 +620,8 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
         logger.info(f"Participant {participant.identity} disconnected")
 
         # Cancel all tasks
-        for task in [interview_state.get("inactivity_task"), interview_state.get("interview_timer_task")]:
+        for task in [interview_state.get("inactivity_task"), interview_state.get("interview_timer_task"),
+                     video_state.get("warning_task"), video_state.get("gate_reminder_task")]:
             if task and not task.done():
                 task.cancel()
 
@@ -636,6 +637,12 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
 
             logger.info(f"Interview ended - duration: {duration_seconds}s, decision: {interview_state.get('decision')}")
 
+        # Disconnect from room when participant leaves
+        async def disconnect():
+            await ctx.room.disconnect()
+
+        asyncio.create_task(disconnect())
+
     # User state change handler for tracking speech activity
     def setup_user_state_handler(sess: AgentSession):
         @sess.on("user_state_changed")
@@ -648,6 +655,9 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
     # Connect to room
     await ctx.connect()
     logger.info("Connected to room")
+
+    # Wait briefly for tracks to be subscribed (fixes race condition)
+    await asyncio.sleep(0.5)
 
     # Create agent session with optimized settings for low latency
     logger.info("Creating agent session")

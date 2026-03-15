@@ -323,9 +323,9 @@ export function AgentControlBar({
             />
             {agentState && (
               <Shimmer
-                duration={2.5}
-                spread={1.5}
-                className="text-sm font-medium font-inter [--color-background:#10A0F0] [--color-muted-foreground:#5D6369] dark:[--color-muted-foreground:#a0a0a0]"
+                duration={1.5}
+                spread={2.5}
+                className="text-sm font-medium font-inter [--color-background:#ffffff] [--color-muted-foreground:#10A0F0] dark:[--color-muted-foreground:#10A0F0]"
               >
                 {AGENT_STATE_TEXT[agentState] || 'Ready'}
               </Shimmer>
@@ -400,6 +400,7 @@ export function AgentControlBar({
               onClick={onDisconnect}
               disabled={!isConnected}
               className={cn(
+                'h-10 px-4 self-center',
                 variant === 'livekit' &&
                   'bg-destructive/10 dark:bg-destructive/10 text-destructive hover:bg-destructive/20 dark:hover:bg-destructive/20 focus:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/4 rounded-full font-mono text-xs font-bold tracking-wider'
               )}
