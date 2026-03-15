@@ -2,8 +2,6 @@
 .claude
 
 # Environment files
-.env
-.env.local
 .env*.local
 
 # Google Cloud credentials (NEVER commit these)
@@ -39,3 +37,4 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+config.bat
