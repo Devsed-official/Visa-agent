@@ -1050,4 +1050,10 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
 
 
 if __name__ == "__main__":
+    # Start health check server for Cloud Run
+    import os
+    if os.environ.get("PORT"):
+        from healthcheck import start_health_server
+        start_health_server()
+
     cli.run_app(server)
