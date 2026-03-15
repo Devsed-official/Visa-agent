@@ -19,7 +19,8 @@ from livekit.agents import (
     get_job_context,
     room_io,
 )
-from livekit.plugins import google, silero
+from livekit.plugins import google
+from google.genai import types
 
 load_dotenv(dotenv_path=".env.local")
 
@@ -324,15 +325,10 @@ class VisaInterviewerAgent(Agent):
         return f"Interview concluded with {decision}. Session will end shortly."
 
 
-server = AgentServer()
-
-
-def prewarm(proc: JobProcess):
-    """Preload VAD model for faster startup."""
-    proc.userdata["vad"] = silero.VAD.load()
-
-
-server.setup_fnc = prewarm
+server = AgentServer(
+    # Keep 1 idle process ready to reduce cold start time
+    num_idle_processes=1,
+)
 
 
 @server.rtc_session(agent_name="visa-interviewer")
@@ -567,8 +563,9 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
                     )
 
                 video_state["current_agent_type"] = "interviewer"
-                asyncio.create_task(
-                    session.update_agent(
+
+                async def do_handoff():
+                    await session.update_agent(
                         VisaInterviewerAgent(
                             country_name=session_state["country_name"],
                             visa_type_name=session_state["visa_type_name"],
@@ -577,7 +574,8 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
                             is_resuming=is_resuming
                         )
                     )
-                )
+
+                asyncio.create_task(do_handoff())
 
     @ctx.room.on("track_unsubscribed")
     def _on_track_unsubscribed(
@@ -650,9 +648,8 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
     # Connect to room
     await ctx.connect()
     logger.info("Connected to room")
-    await asyncio.sleep(1)
 
-    # Create agent session
+    # Create agent session with optimized settings for low latency
     logger.info("Creating agent session")
     session = AgentSession(
         llm=google.beta.realtime.RealtimeModel(
@@ -661,8 +658,23 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
             temperature=0.7,
             proactivity=True,
             enable_affective_dialog=True,
+            # Disable thinking for real-time conversation
+            # Your detailed instructions guide decision-making instead
+            thinking_config=types.ThinkingConfig(
+                include_thoughts=False,
+            ),
+            # Faster turn detection - respond quicker after user stops speaking
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=False,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    prefix_padding_ms=100,
+                    silence_duration_ms=300,
+                ),
+            ),
         ),
-        vad=ctx.proc.userdata["vad"],
+        # Using Gemini's built-in turn detection, no separate VAD needed
     )
 
     # Setup user state handler
