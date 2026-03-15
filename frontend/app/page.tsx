@@ -8,7 +8,9 @@ import {
   InterviewProvider,
   SessionView,
   type InterviewConnectionState,
+  type InterviewSessionResult,
 } from "@/components/interview";
+import { InterviewResultsView, type InterviewResult } from "@/components/mock-interview";
 import type { AppConfig } from "@/app-config";
 
 // Interview app config
@@ -32,6 +34,7 @@ export default function Home() {
   const [userName, setUserName] = useState("");
   const [isStarting, setIsStarting] = useState(false);
   const [connectionDetails, setConnectionDetails] = useState<ConnectionDetails | null>(null);
+  const [interviewResult, setInterviewResult] = useState<InterviewResult | null>(null);
 
   const handleStartInterview = useCallback(async () => {
     if (!userName.trim()) return;
@@ -74,13 +77,15 @@ export default function Home() {
     []
   );
 
-  const handleDisconnect = useCallback(() => {
+  const handleDisconnect = useCallback((result: InterviewSessionResult) => {
+    setInterviewResult(result);
     setPageState("completed");
   }, []);
 
   const handleRestart = useCallback(() => {
     setUserName("");
     setConnectionDetails(null);
+    setInterviewResult(null);
     setPageState("setup");
   }, []);
 
@@ -205,45 +210,24 @@ export default function Home() {
           </motion.div>
         )}
 
-        {/* Completed View */}
+        {/* Completed View - Show Results */}
         {pageState === "completed" && (
           <motion.div
             key="completed"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="flex h-screen w-full items-center justify-center px-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="h-full"
           >
-            <div className="flex flex-col items-center justify-center text-center">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
-                <svg
-                  className="h-8 w-8 text-green-600"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 13l4 4L19 7"
-                  />
-                </svg>
-              </div>
-              <h2 className="text-xl font-medium text-[#0E1716]">
-                Interview Completed
-              </h2>
-              <p className="mt-2 text-sm text-[#828283]">
-                Your practice interview session has ended.
-              </p>
-              <Button
-                onClick={handleRestart}
-                normalColor="#10A0F0"
-                className="mt-6"
-              >
-                Start New Interview
-              </Button>
-            </div>
+            <InterviewResultsView
+              result={interviewResult || {
+                decision: null,
+                questionsAsked: 0,
+                confidenceLevel: "neutral",
+                durationSeconds: 0,
+              }}
+              onRestart={handleRestart}
+            />
           </motion.div>
         )}
       </AnimatePresence>

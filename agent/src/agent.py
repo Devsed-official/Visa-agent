@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -21,10 +20,9 @@ from livekit.agents import (
     function_tool,
     get_job_context,
     room_io,
+    voice,
 )
-from livekit.plugins import google
-from google.genai import types
-from google import genai
+from livekit.plugins import google, silero
 
 load_dotenv(dotenv_path=".env.local")
 
@@ -118,216 +116,6 @@ async def publish_interview_attributes(room: rtc.Room, data: InterviewSessionDat
         await room.local_participant.set_attributes(attributes)
     except Exception as e:
         logger.error(f"Failed to publish attributes: {e}")
-
-
-class VideoAnalyzer:
-    """Background video analyzer that runs independently from the main agent."""
-
-    STARTUP_DELAY = 20.0  # Wait before first analysis to let main agent stabilize
-    BASE_INTERVAL = 30.0  # Base interval between analyses (conservative for free tier)
-    MAX_INTERVAL = 120.0  # Max interval after rate limiting
-    ANALYSIS_PROMPT = """Analyze this visa interview candidate's video frame. Be concise.
-
-Provide a JSON response with:
-{
-  "confidence": "low" | "neutral" | "high",
-  "topic": "brief current topic being discussed (2-4 words)",
-  "impression": "one short sentence about body language/demeanor",
-  "tip": "one helpful tip for the candidate (or empty if doing well)"
-}
-
-Focus on: eye contact, posture, nervousness, confidence, engagement.
-Only return valid JSON, nothing else."""
-
-    def __init__(self, room: rtc.Room, session_data: InterviewSessionData):
-        self._room = room
-        self._data = session_data
-        self._running = False
-        self._task: asyncio.Task | None = None
-        self._video_track: rtc.RemoteVideoTrack | None = None
-        self._client = genai.Client()
-        self._current_interval = self.BASE_INTERVAL
-        self._rate_limited_until: float = 0  # Timestamp when rate limit expires
-        self._first_run = True  # Track if this is the first analysis
-
-    def set_video_track(self, track: rtc.RemoteVideoTrack):
-        """Set the video track to analyze."""
-        self._video_track = track
-        logger.info("VideoAnalyzer: Video track set")
-
-    def clear_video_track(self):
-        """Clear the video track."""
-        self._video_track = None
-        logger.info("VideoAnalyzer: Video track cleared")
-
-    async def start(self):
-        """Start the background analysis loop."""
-        if self._running:
-            return
-        self._running = True
-        self._task = asyncio.create_task(self._analysis_loop())
-        logger.info("VideoAnalyzer: Started")
-
-    async def stop(self):
-        """Stop the analysis loop."""
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        self._task = None
-        logger.info("VideoAnalyzer: Stopped")
-
-    async def _analysis_loop(self):
-        """Main analysis loop running in background."""
-        # Initial startup delay to let main Gemini agent stabilize
-        if self._first_run:
-            logger.info(f"VideoAnalyzer: Waiting {self.STARTUP_DELAY}s before first analysis")
-            await asyncio.sleep(self.STARTUP_DELAY)
-            self._first_run = False
-
-        while self._running:
-            try:
-                # Check if still rate limited before sleeping
-                if time.time() < self._rate_limited_until:
-                    wait_time = self._rate_limited_until - time.time()
-                    logger.debug(f"VideoAnalyzer: Rate limited, sleeping {wait_time:.1f}s")
-                    await asyncio.sleep(wait_time + 1)  # Wait until rate limit expires + buffer
-                    continue
-
-                if not self._video_track or not self._running:
-                    await asyncio.sleep(5)  # Short sleep when no track
-                    continue
-
-                # Only analyze during interview stage
-                if self._data.stage != "interview":
-                    await asyncio.sleep(5)  # Short sleep when not interviewing
-                    continue
-
-                # Capture and analyze frame
-                await self._analyze_current_frame()
-
-                # Wait for next interval after successful/failed analysis
-                await asyncio.sleep(self._current_interval)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"VideoAnalyzer error: {e}")
-
-    async def _analyze_current_frame(self):
-        """Capture current frame and analyze it."""
-        if not self._video_track:
-            return
-
-        try:
-            # Create a video stream to capture a frame
-            video_stream = rtc.VideoStream(self._video_track)
-
-            async for frame_event in video_stream:
-                # Get the first frame and break
-                frame = frame_event.frame
-                # Convert to RGBA then to JPEG bytes
-                argb_frame = frame.convert(rtc.VideoBufferType.RGBA)
-
-                # Use PIL to convert to JPEG
-                try:
-                    from PIL import Image
-                    import io
-
-                    img = Image.frombytes(
-                        'RGBA',
-                        (argb_frame.width, argb_frame.height),
-                        argb_frame.data
-                    )
-                    # Convert to RGB (JPEG doesn't support alpha)
-                    img = img.convert('RGB')
-
-                    buffer = io.BytesIO()
-                    img.save(buffer, format='JPEG', quality=70)
-                    image_bytes = buffer.getvalue()
-
-                except ImportError:
-                    logger.warning("PIL not available for frame conversion")
-                    await video_stream.aclose()
-                    return
-
-                await video_stream.aclose()
-
-                # Send to Gemini for analysis
-                await self._analyze_with_gemini(image_bytes)
-                break
-
-        except Exception as e:
-            logger.error(f"Frame capture error: {e}")
-
-    async def _analyze_with_gemini(self, image_bytes: bytes):
-        """Send frame to Gemini for analysis."""
-        try:
-            # Use a fast model for quick analysis
-            response = await asyncio.to_thread(
-                self._client.models.generate_content,
-                model="gemini-2.0-flash",
-                contents=[
-                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                    self.ANALYSIS_PROMPT,
-                ],
-            )
-
-            # Success - reset interval back to base
-            self._current_interval = self.BASE_INTERVAL
-
-            # Parse JSON response
-            text = response.text.strip()
-            # Remove markdown code blocks if present
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]
-                text = text.rsplit("```", 1)[0]
-
-            analysis = json.loads(text)
-
-            # Update session data
-            self._data.confidence_level = analysis.get("confidence", "neutral")
-            self._data.current_topic = analysis.get("topic", "")
-            self._data.video_impression = analysis.get("impression", "")
-
-            # Add tip if provided
-            tip = analysis.get("tip", "")
-            if tip and tip not in self._data.tips:
-                self._data.tips.append(tip)
-                # Keep only last 5 tips
-                self._data.tips = self._data.tips[-5:]
-
-            # Publish updated attributes
-            await publish_interview_attributes(self._room, self._data)
-            logger.debug(f"VideoAnalyzer: Analysis complete - {analysis}")
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"VideoAnalyzer: Failed to parse response: {e}")
-        except Exception as e:
-            error_str = str(e)
-            # Handle rate limiting (429 RESOURCE_EXHAUSTED)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                # Parse retry delay from error message (e.g., "retryDelay": "41s")
-                retry_delay = 60.0  # Default to 60 seconds
-                match = re.search(r'"retryDelay":\s*"(\d+)s"', error_str)
-                if match:
-                    retry_delay = float(match.group(1))
-
-                # Set rate limit expiration
-                self._rate_limited_until = time.time() + retry_delay
-
-                # Exponential backoff on interval (double it, up to MAX_INTERVAL)
-                self._current_interval = min(self._current_interval * 2, self.MAX_INTERVAL)
-
-                logger.warning(
-                    f"VideoAnalyzer: Rate limited. Waiting {retry_delay:.0f}s, "
-                    f"next interval: {self._current_interval:.0f}s"
-                )
-            else:
-                logger.error(f"VideoAnalyzer: Gemini analysis error: {e}")
 
 
 def build_interview_instructions(
@@ -671,7 +459,6 @@ async def entrypoint(ctx: JobContext):
     data = InterviewSessionData(room_name=ctx.room.name)
 
     session: AgentSession[InterviewSessionData] | None = None
-    video_analyzer = VideoAnalyzer(ctx.room, data)
 
     async def handle_user_inactivity():
         """Monitor user inactivity and prompt them to respond."""
@@ -789,7 +576,7 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
             # Save context without gate instructions for when we resume
             data.saved_context = session.agent.chat_ctx.copy(exclude_instructions=True)
             data.current_agent_type = "gate"
-            await session.update_agent(CameraGateAgent(language_name=data.language_name))
+            session.update_agent(CameraGateAgent(language_name=data.language_name))
             data.gate_reminder_task = asyncio.create_task(handle_gate_reminders())
 
     async def handle_gate_reminders():
@@ -830,10 +617,6 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
             data.has_video = True
             logger.info(f"VIDEO TRACK DETECTED from {participant.identity}")
 
-            # Set video track for analyzer
-            if isinstance(track, rtc.RemoteVideoTrack):
-                video_analyzer.set_video_track(track)
-
             # Extract interview config from participant metadata (sent from frontend)
             if data.country_name is None:
                 metadata = get_participant_metadata(participant)
@@ -870,23 +653,18 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
                     data.inactivity_task = asyncio.create_task(
                         handle_user_inactivity()
                     )
-                    # Start video analyzer
-                    asyncio.create_task(video_analyzer.start())
 
                 data.current_agent_type = "interviewer"
 
-                async def do_handoff():
-                    await session.update_agent(
-                        VisaInterviewerAgent(
-                            country_name=data.country_name,
-                            visa_type_name=data.visa_type_name,
-                            language_name=data.language_name,
-                            chat_ctx=saved_ctx,
-                            is_resuming=is_resuming
-                        )
+                session.update_agent(
+                    VisaInterviewerAgent(
+                        country_name=data.country_name,
+                        visa_type_name=data.visa_type_name,
+                        language_name=data.language_name,
+                        chat_ctx=saved_ctx,
+                        is_resuming=is_resuming
                     )
-
-                asyncio.create_task(do_handoff())
+                )
 
     @ctx.room.on("track_unsubscribed")
     def _on_track_unsubscribed(
@@ -901,9 +679,6 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
             data.has_video = False
             logger.info(f"VIDEO TRACK LOST from {participant.identity}")
 
-            # Clear video track from analyzer
-            video_analyzer.clear_video_track()
-
             if session and data.current_agent_type == "interviewer":
                 data.warning_task = asyncio.create_task(handle_camera_warning())
 
@@ -912,9 +687,6 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
         if publication.kind == rtc.TrackKind.KIND_VIDEO:
             data.has_video = False
             logger.info(f"Video muted by {participant.identity} - treating as camera off")
-
-            # Clear video track from analyzer
-            video_analyzer.clear_video_track()
 
             # Trigger camera warning flow (same as track unsubscribed)
             if session and data.current_agent_type == "interviewer":
@@ -931,13 +703,6 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
                 data.warning_task.cancel()
                 data.warning_task = None
 
-            # Re-enable video analyzer if we have the track
-            for pub in participant.track_publications.values():
-                if pub.kind == rtc.TrackKind.KIND_VIDEO and pub.track:
-                    if isinstance(pub.track, rtc.RemoteVideoTrack):
-                        video_analyzer.set_video_track(pub.track)
-                        break
-
             # Acknowledge if still in interviewer mode
             if session and data.current_agent_type == "interviewer":
                 async def ack_video():
@@ -949,9 +714,6 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
     @ctx.room.on("participant_disconnected")
     def _on_participant_disconnected(participant: rtc.RemoteParticipant):
         logger.info(f"Participant {participant.identity} disconnected")
-
-        # Stop video analyzer
-        asyncio.create_task(video_analyzer.stop())
 
         # Cancel all tasks
         data.cancel_all_tasks()
@@ -987,34 +749,40 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
     # Publish initial attributes immediately so frontend has data
     await publish_interview_attributes(ctx.room, data)
 
-    # Wait briefly for tracks to be subscribed (fixes race condition)
-    await asyncio.sleep(0.5)
+    # Check for existing video tracks from remote participants
+    # This handles the case where the user already has their camera on when joining
+    for participant in ctx.room.remote_participants.values():
+        for publication in participant.track_publications.values():
+            if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
+                data.has_video = True
+                logger.info(f"Found existing video track from {participant.identity}")
 
-    # Create agent session with optimized settings for low latency
+                # Extract interview config from participant metadata
+                if data.country_name is None:
+                    metadata = get_participant_metadata(participant)
+                    if metadata:
+                        data.country_name = metadata.get("countryName", "US")
+                        data.visa_type_name = metadata.get("visaTypeName", "visitor")
+                        data.language_name = metadata.get("languageName")
+                        logger.info(f"Interview config: country={data.country_name}, visa={data.visa_type_name}, language={data.language_name}")
+                break
+        if data.has_video:
+            break
+
+    # Create agent session matching official example setup
     logger.info("Creating agent session")
     session = AgentSession[InterviewSessionData](
         userdata=data,
-        llm=google.beta.realtime.RealtimeModel(
-            model="gemini-2.5-flash-native-audio-preview-12-2025",
+        vad=silero.VAD.load(),
+        llm=google.realtime.RealtimeModel(
+            model="gemini-live-2.5-flash-native-audio",
             voice="Charon",
-            temperature=0.7,
-            proactivity=True,
-            enable_affective_dialog=True,
-            # Disable thinking for real-time conversation
-            thinking_config=types.ThinkingConfig(
-                include_thoughts=False,
-            ),
-            # Faster turn detection - respond quicker after user stops speaking
-            realtime_input_config=types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=False,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    prefix_padding_ms=100,
-                    silence_duration_ms=300,
-                ),
-            ),
+            vertexai=True,
+            project="visa-interview-2024",
+            location="us-central1",
         ),
+        # Constant 2fps video for continuous facial expression analysis
+        video_sampler=voice.VoiceActivityVideoSampler(speaking_fps=2.0, silent_fps=2.0),
     )
 
     # Setup user state handler
@@ -1024,6 +792,9 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
     if data.has_video:
         logger.info("Camera already enabled - starting with Interviewer")
         data.current_agent_type = "interviewer"
+        data.interview_started = True
+        data.start_time = time.time()
+        data.user_last_spoke_at = time.time()
         initial_agent = VisaInterviewerAgent(
             country_name=data.country_name,
             visa_type_name=data.visa_type_name,
@@ -1034,7 +805,7 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
         data.current_agent_type = "gate"
         initial_agent = CameraGateAgent(language_name=data.language_name)
 
-    # Start session with video input
+    # Start session with video input (audio handled by VAD automatically)
     await session.start(
         room=ctx.room,
         agent=initial_agent,
@@ -1047,6 +818,10 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
 
     if data.current_agent_type == "gate":
         data.gate_reminder_task = asyncio.create_task(handle_gate_reminders())
+    elif data.current_agent_type == "interviewer":
+        # Start interview timer and inactivity monitor
+        data.interview_timer_task = asyncio.create_task(handle_interview_timer())
+        data.inactivity_task = asyncio.create_task(handle_user_inactivity())
 
 
 if __name__ == "__main__":

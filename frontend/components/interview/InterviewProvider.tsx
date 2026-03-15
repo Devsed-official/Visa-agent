@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useCallback, useEffect, useRef } from 'react'
-import { TokenSource, ConnectionState, RoomEvent, type RemoteParticipant } from 'livekit-client'
+import { TokenSource, ConnectionState, RoomEvent, type RemoteParticipant, type LocalParticipant, type Participant } from 'livekit-client'
 import {
   useSession,
   SessionProvider,
@@ -24,12 +24,19 @@ export type InterviewConnectionState =
   | 'reconnecting'
   | 'failed'
 
+export interface InterviewSessionResult {
+  decision: 'approved' | 'denied' | null
+  questionsAsked: number
+  confidenceLevel: 'low' | 'neutral' | 'high'
+  durationSeconds: number
+}
+
 interface InterviewProviderProps {
   connectionDetails: LiveKitConnectionDetails
   roomName: string
   children: React.ReactNode
   onConnectionStateChange?: (state: InterviewConnectionState) => void
-  onDisconnected?: () => void
+  onDisconnected?: (result: InterviewSessionResult) => void
 }
 
 // =============================================
@@ -44,6 +51,8 @@ export function InterviewProvider({
   onDisconnected,
 }: InterviewProviderProps) {
   const hasConnectedRef = useRef(false)
+  const sessionStartTimeRef = useRef<number | null>(null)
+  const lastAgentAttributesRef = useRef<Record<string, string>>({})
 
   // Create token source from our connection details using custom method
   const tokenSource = useMemo(() => {
@@ -74,6 +83,21 @@ export function InterviewProvider({
     }
   }, [])
 
+  // Build session result from captured attributes
+  const buildSessionResult = useCallback((): InterviewSessionResult => {
+    const attrs = lastAgentAttributesRef.current
+    const durationSeconds = sessionStartTimeRef.current
+      ? Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+      : 0
+
+    return {
+      decision: (attrs.decision as 'approved' | 'denied') || null,
+      questionsAsked: parseInt(attrs.questions_asked || '0', 10),
+      confidenceLevel: (attrs.confidence_level as 'low' | 'neutral' | 'high') || 'neutral',
+      durationSeconds,
+    }
+  }, [])
+
   // Track connection state changes and participant disconnects
   useEffect(() => {
     if (!session.room) return
@@ -81,37 +105,50 @@ export function InterviewProvider({
     const handleStateChange = (state: ConnectionState) => {
       if (state === ConnectionState.Connected) {
         hasConnectedRef.current = true
+        sessionStartTimeRef.current = Date.now()
       }
 
       onConnectionStateChange?.(mapState(state))
 
       // Only trigger disconnect callback if we were previously connected
       if (state === ConnectionState.Disconnected && hasConnectedRef.current) {
-        onDisconnected?.()
+        onDisconnected?.(buildSessionResult())
+      }
+    }
+
+    // Track agent attribute changes
+    const handleAttributesChanged = (changedAttributes: Record<string, string>, participant: RemoteParticipant | LocalParticipant) => {
+      // Only track remote participant (agent) attributes, not local
+      if (participant !== session.room.localParticipant) {
+        lastAgentAttributesRef.current = { ...lastAgentAttributesRef.current, ...changedAttributes }
+        console.log('[InterviewProvider] Agent attributes updated:', lastAgentAttributesRef.current)
       }
     }
 
     // Handle when the agent (interviewer) disconnects from the room
     const handleParticipantDisconnected = (participant: RemoteParticipant) => {
-      // Check if this is the agent participant (not another user)
-      // Agent identity typically starts with 'agent' or we can check if it's the only remote participant
       console.log('[InterviewProvider] Participant disconnected:', participant.identity)
+
+      // Capture final attributes from the departing participant
+      if (participant.attributes) {
+        lastAgentAttributesRef.current = { ...lastAgentAttributesRef.current, ...participant.attributes }
+      }
 
       // If we were connected and the agent left, trigger disconnect
       if (hasConnectedRef.current) {
-        // Check if there are no more remote participants (agent left)
         const remainingParticipants = session.room.remoteParticipants.size
         console.log('[InterviewProvider] Remaining participants:', remainingParticipants)
 
         if (remainingParticipants === 0) {
           console.log('[InterviewProvider] Agent disconnected - ending session')
-          onDisconnected?.()
+          onDisconnected?.(buildSessionResult())
         }
       }
     }
 
     session.room.on('connectionStateChanged', handleStateChange)
     session.room.on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected)
+    session.room.on(RoomEvent.ParticipantAttributesChanged, handleAttributesChanged)
 
     // Report initial state
     onConnectionStateChange?.(mapState(session.room.state))
@@ -119,8 +156,9 @@ export function InterviewProvider({
     return () => {
       session.room.off('connectionStateChanged', handleStateChange)
       session.room.off(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected)
+      session.room.off(RoomEvent.ParticipantAttributesChanged, handleAttributesChanged)
     }
-  }, [session.room, onConnectionStateChange, onDisconnected, mapState])
+  }, [session.room, onConnectionStateChange, onDisconnected, mapState, buildSessionResult])
 
   // Auto-connect when session is ready
   useEffect(() => {

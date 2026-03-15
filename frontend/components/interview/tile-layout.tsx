@@ -6,7 +6,6 @@ import {
   useLocalParticipant,
   ParticipantName,
   useVoiceAssistant,
-  useTrackTranscription,
 } from '@livekit/components-react';
 import { Info, X, User, Clock, MessageSquare, HelpCircle, CheckCircle2, XCircle, Eye, Lightbulb } from 'lucide-react';
 import { LiveWaveform } from '@/components/ui/live-waveform';
@@ -99,22 +98,9 @@ interface InfoSidebarProps {
 
 function InfoSidebar({ isOpen, onClose }: InfoSidebarProps) {
   const { state: agentState, agentTranscriptions, agentAttributes } = useVoiceAssistant();
-  const { localParticipant, microphoneTrack } = useLocalParticipant();
   const timer = useTimer();
   const transcriptRef = useRef<HTMLDivElement>(null);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
-
-  // Build track reference for user's microphone transcription
-  const micTrackRef = microphoneTrack
-    ? {
-        participant: localParticipant,
-        source: Track.Source.Microphone,
-        publication: microphoneTrack,
-      }
-    : undefined;
-
-  // Get user transcriptions from microphone track
-  const { segments: userSegments } = useTrackTranscription(micTrackRef);
 
   // Parse agent attributes
   const interviewStage = agentAttributes?.stage || 'waiting';
@@ -124,6 +110,11 @@ function InfoSidebar({ isOpen, onClose }: InfoSidebarProps) {
   const currentTopic = agentAttributes?.current_topic || '';
   const confidenceLevel = agentAttributes?.confidence_level || 'neutral';
   const videoImpression = agentAttributes?.video_impression || '';
+
+  // Debug: Log agent attributes when they change
+  useEffect(() => {
+    console.log('[InfoSidebar] Agent attributes:', agentAttributes);
+  }, [agentAttributes]);
 
   const STAGE_LABELS: Record<string, string> = {
     'waiting': 'Waiting',
@@ -138,47 +129,20 @@ function InfoSidebar({ isOpen, onClose }: InfoSidebarProps) {
     'high': { color: 'text-green-400 bg-green-500/20', label: 'Good', icon: '😊' },
   };
 
-  // Process both agent and user transcriptions
-  // Deduplicate by segment ID and keep only the latest version of each
+  // Process agent transcriptions only (user STT disabled for faster performance)
   useEffect(() => {
-    const segmentMap = new Map<string, TranscriptMessage>();
+    const agentMessages: TranscriptMessage[] = agentTranscriptions.map((t) => ({
+      id: `agent-${t.id}`,
+      speaker: 'agent' as const,
+      text: t.text,
+      timestamp: t.firstReceivedTime,
+      isFinal: t.final,
+    }));
 
-    // Add agent transcriptions (use segment id for deduplication)
-    agentTranscriptions.forEach((t) => {
-      const key = `agent-${t.id}`;
-      // Only update if this is newer or doesn't exist
-      const existing = segmentMap.get(key);
-      if (!existing || t.lastReceivedTime > existing.timestamp) {
-        segmentMap.set(key, {
-          id: key,
-          speaker: 'agent',
-          text: t.text,
-          timestamp: t.firstReceivedTime,
-          isFinal: t.final,
-        });
-      }
-    });
-
-    // Add user transcriptions
-    userSegments.forEach((t) => {
-      const key = `user-${t.id}`;
-      const existing = segmentMap.get(key);
-      if (!existing || t.lastReceivedTime > existing.timestamp) {
-        segmentMap.set(key, {
-          id: key,
-          speaker: 'user',
-          text: t.text,
-          timestamp: t.firstReceivedTime,
-          isFinal: t.final,
-        });
-      }
-    });
-
-    // Convert to array and sort by timestamp
-    const allMessages = Array.from(segmentMap.values());
-    allMessages.sort((a, b) => a.timestamp - b.timestamp);
-    setMessages(allMessages);
-  }, [agentTranscriptions, userSegments]);
+    // Sort by timestamp
+    agentMessages.sort((a, b) => a.timestamp - b.timestamp);
+    setMessages(agentMessages);
+  }, [agentTranscriptions]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -302,8 +266,8 @@ function InfoSidebar({ isOpen, onClose }: InfoSidebarProps) {
           </div>
         </motion.div>
 
-        {/* Video Impressions Container - Only show during interview */}
-        {interviewStage === 'interview' && (videoImpression || currentTopic) && (
+        {/* Video Impressions Container - Show during interview stage */}
+        {interviewStage === 'interview' && (
           <motion.div
             className="bg-[#111] rounded-2xl border border-white/10 overflow-hidden"
             initial={{ opacity: 0, y: 10 }}
@@ -379,14 +343,9 @@ function InfoSidebar({ isOpen, onClose }: InfoSidebarProps) {
                   key={msg.id}
                   initial={{ opacity: 0, y: 5 }}
                   animate={{ opacity: msg.isFinal ? 1 : 0.6, y: 0 }}
-                  className={cn(
-                    "text-sm",
-                    msg.speaker === 'agent' ? "text-white/90" : "text-blue-400"
-                  )}
+                  className="text-sm text-white/90"
                 >
-                  <span className="font-medium">
-                    {msg.speaker === 'agent' ? 'Officer: ' : 'You: '}
-                  </span>
+                  <span className="font-medium">Officer: </span>
                   <span className={cn(!msg.isFinal && "italic")}>
                     {msg.text}
                   </span>
