@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
       metadata: JSON.stringify({
         visaTypeName: visaType || 'F1 Student Visa',
         countryName: countryName || 'US',
+        languageName: 'English',
       }),
     });
 
