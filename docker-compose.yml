@@ -1,0 +1,68 @@
+# Visa Interview Agent - Docker Compose
+name: visa-interview-agent
+
+services:
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_LIVEKIT_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+    container_name: visa-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_LIVEKIT_URL=${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+    depends_on:
+      livekit:
+        condition: service_healthy
+    networks:
+      - visa-network
+    restart: unless-stopped
+
+  # LiveKit Server for real-time communication
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: visa-livekit
+    command: --config /etc/livekit.yaml
+    ports:
+      - "7880:7880"   # HTTP/WebSocket
+      - "7881:7881"   # RTC over TCP
+      - "50000-50100:50000-50100/udp"  # WebRTC UDP ports
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      - visa-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7880"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Visa Interview Agent (Python with Gemini Live)
+  interview-agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: visa-interview-agent
+    environment:
+      # LiveKit
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+
+      # Google Gemini
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    depends_on:
+      livekit:
+        condition: service_healthy
+    networks:
+      - visa-network
+    restart: unless-stopped
+
+networks:
+  visa-network:
+    driver: bridge
