@@ -775,11 +775,8 @@ Announce your decision clearly: 'Your visa has been APPROVED' or 'Your visa appl
         userdata=data,
         vad=silero.VAD.load(),
         llm=google.realtime.RealtimeModel(
-            model="gemini-live-2.5-flash-native-audio",
+            model="gemini-2.5-flash-native-audio-preview-12-2025",
             voice="Charon",
-            vertexai=True,
-            project="visa-interview-2024",
-            location="us-central1",
         ),
         # Constant 2fps video for continuous facial expression analysis
         video_sampler=voice.VoiceActivityVideoSampler(speaking_fps=2.0, silent_fps=2.0),
