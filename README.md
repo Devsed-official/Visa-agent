@@ -347,7 +347,17 @@ visa-interview-agent/
 │   ├── components/          # React components
 │   └── Dockerfile           # Frontend container
 │
-├── docker-compose.yml       # Full stack orchestration
+├── deploy/                   # Deployment automation
+│   ├── SETUP.md             # Step-by-step GCP setup guide
+│   └── setup-gcp.sh         # One-time GCP setup script
+│
+├── .github/workflows/
+│   └── deploy.yml           # GitHub Actions deployment
+│
+├── docs/
+│   └── ARCHITECTURE.md      # Detailed architecture diagrams
+│
+├── docker-compose.yml       # Local development orchestration
 ├── livekit.yaml            # LiveKit server config
 └── README.md               # This file
 ```
@@ -423,13 +433,49 @@ A background `VideoAnalyzer` periodically:
 
 ## Google Cloud Deployment
 
-*Coming soon: Cloud Run deployment with Terraform/Pulumi*
+Automated deployment via GitHub Actions to Google Cloud Run.
 
-### Required Services
+### Prerequisites
 
-- **Cloud Run** - Agent and frontend hosting
-- **Artifact Registry** - Container images
-- **Secret Manager** - API keys
+1. [Google Cloud Account](https://console.cloud.google.com) with billing enabled
+2. [LiveKit Cloud Account](https://cloud.livekit.io) (free tier available)
+3. [Gemini API Key](https://aistudio.google.com/apikey)
+
+### One-Time Setup
+
+```bash
+# 1. Run the setup script (creates GCP project, service account, etc.)
+./deploy/setup-gcp.sh
+
+# 2. Add GitHub Secrets (Settings → Secrets → Actions):
+#    - GCP_PROJECT_ID
+#    - GCP_SA_KEY (contents of github-actions-key.json)
+#    - LIVEKIT_URL
+#    - LIVEKIT_API_KEY
+#    - LIVEKIT_API_SECRET
+#    - GOOGLE_API_KEY
+```
+
+See [`deploy/SETUP.md`](deploy/SETUP.md) for detailed instructions.
+
+### Deploy
+
+Push to `main` branch to trigger automatic deployment:
+
+```bash
+git push origin main
+```
+
+Or manually trigger via GitHub Actions → "Deploy to Google Cloud Run" → "Run workflow"
+
+### Architecture on GCP
+
+| Service | Platform | Purpose |
+|---------|----------|---------|
+| `visa-interview-agent` | Cloud Run | Python AI agent |
+| `visa-interview-frontend` | Cloud Run | Next.js web app |
+| Artifact Registry | GCP | Docker image storage |
+| LiveKit Cloud | External | WebRTC infrastructure |
 
 ---
 
